@@ -1,3 +1,4 @@
 mlflow
 fastapi
 uvicorn
+tensorflow

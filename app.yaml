@@ -1,0 +1,15 @@
+runtime: custom
+env: flex
+
+handlers:
+  - url: /.*
+    script: auto
+
+automatic_scaling:
+  min_num_instances: 1
+  max_num_instances: 2
+
+env_variables:
+  MODEL_PATH: "Models/lstm_model.json"
+  WEIGHTS_PATH: "Models/lstm_model.weights.h5"
+  TOKENIZER_PATH: "Models/tokenizer.pickle"
