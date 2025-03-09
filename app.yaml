@@ -13,3 +13,4 @@ env_variables:
   MODEL_PATH: "Models/lstm_model.json"
   WEIGHTS_PATH: "Models/lstm_model.weights.h5"
   TOKENIZER_PATH: "Models/tokenizer.pickle"
+
