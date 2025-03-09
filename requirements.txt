@@ -1,4 +1,4 @@
-mlflow
 fastapi
 uvicorn
 tensorflow
+nltk
