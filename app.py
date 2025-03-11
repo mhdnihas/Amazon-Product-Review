@@ -12,36 +12,48 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+import pandas as pd
+import json
+from evidently.report import Report
+from evidently.metrics import DataDriftPresetMetric
 
 
-
-# Download necessary NLTK data files
 nltk.download("stopwords")
 nltk.download("punkt")
 nltk.download('punkt_tab')
 
 
-# Initialize FastAPI app
 app = FastAPI()
 
 
 
-# Load the model architecture from JSON file
 with open("Models/lstm_model.json", "r") as json_file:
     loaded_model_json = json_file.read()
     model = model_from_json(loaded_model_json)
 
 
-# Load the model weights
 model.load_weights("Models/lstm_model.weights.h5")
 
-# Load the tokenizer
+
 with open('Models/tokenizer.pickle', 'rb') as handle:
     tokenizer = pickle.load(handle)
 
-# Initialize NLP tools
+
 stop_words = set(stopwords.words("english"))
 stemmer = PorterStemmer()
+
+
+FEEDBACK_FILE = "feedback.json"
+
+
+
+def log_predictions(review, predicted_sentiment):
+    log_data = {
+        "review": review,
+        "predicted_sentiment": predicted_sentiment
+    }
+    with open("predictions.json", "a") as f:
+        f.write(json.dumps(log_data) + "\n")
 
 
 def preprocess_text(text: str) -> str:
@@ -54,6 +66,33 @@ def preprocess_text(text: str) -> str:
     tokens = [word for word in tokens if not word.isdigit()]
     tokens = [stemmer.stem(word) for word in tokens]
     return " ".join(tokens)
+
+
+
+def store_feedback(review, predicted_sentiment, actual_sentiment=None, rating=None):
+    """Stores user feedback in a JSON file."""
+    feedback_data = {
+        "review": review,
+        "predicted_sentiment": predicted_sentiment,
+        "actual_sentiment": actual_sentiment,
+        "rating": rating
+    }
+
+    if os.path.exists(FEEDBACK_FILE):
+        with open(FEEDBACK_FILE, "r") as file:
+            try:
+                data = json.load(file)
+            except json.JSONDecodeError:
+                data = []
+    else:
+        data = []
+
+    data.append(feedback_data)
+
+    with open(FEEDBACK_FILE, "w") as file:
+        json.dump(data, file, indent=4)
+
+
 
 
 
@@ -81,13 +120,21 @@ async def predict(request: PredictionInput):
     padded_sequence = pad_sequences(sequence, maxlen=200)
 
 
-
     # Make prediction
     predictions = model.predict(padded_sequence)
     predicted_class = np.argmax(predictions, axis=1)[0]
     sentiment = ["Negative", "Neutral", "Positive"][predicted_class]
+
+
+    # Store feedback if actual sentiment and rating are provided
+    if request.actual_sentiment and request.rating:
+        store_feedback(request.text, sentiment, request.actual_sentiment, request.rating)
+
           
     return PredictionResponse(predictions=sentiment)
+
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
