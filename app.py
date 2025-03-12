@@ -14,8 +14,6 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 import pandas as pd
 import json
-from evidently.report import Report
-from evidently.metrics import DataDriftPresetMetric
 
 
 nltk.download("stopwords")
@@ -104,9 +102,33 @@ class PredictionResponse(BaseModel):
     predictions: str
 
 
+class FeedbackInput(BaseModel):
+    review: str
+    predicted_sentiment: str
+    actual_sentiment: str
+    rating: str
+
+
+
 @app.get("/", response_class=FileResponse)
 async def get_homepage():
     return "static/index.html"
+
+
+@app.post("/submit-feedback")
+async def submit_feedback(feedback: FeedbackInput):
+    """Handles storing user feedback in a JSON file."""
+    try:
+        store_feedback(
+            feedback.review,
+            feedback.predicted_sentiment,
+            feedback.actual_sentiment,
+            feedback.rating
+        )
+        return JSONResponse(content={"message": "Feedback saved successfully!"}, status_code=200)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 
 
 
@@ -127,9 +149,11 @@ async def predict(request: PredictionInput):
 
 
     # Store feedback if actual sentiment and rating are provided
-    if request.actual_sentiment and request.rating:
-        store_feedback(request.text, sentiment, request.actual_sentiment, request.rating)
-
+    try:
+        if request.actual_sentiment and request.rating:
+            store_feedback(request.text, sentiment, request.actual_sentiment, request.rating)
+    except Exception as e:
+        print(e)
           
     return PredictionResponse(predictions=sentiment)
 

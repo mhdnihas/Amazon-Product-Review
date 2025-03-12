@@ -94,7 +94,7 @@
             <h2>Feedback</h2>
 
             <h3 class="small-text">Rate the Prediction:</h3>
-            <div class="feedback-group">
+            <div class="feedback-group" id="rating-group">
                 <label><input type="radio" name="feedback" value="1"> 1 - Very Poor</label>
                 <label><input type="radio" name="feedback" value="2"> 2 - Poor</label>
                 <label><input type="radio" name="feedback" value="3"> 3 - Neutral</label>
@@ -136,32 +136,40 @@
             document.getElementById('feedback-section').classList.remove('hidden');
         });
 
-        document.getElementById('submit-feedback').addEventListener('click', function() {
+        document.getElementById('submit-feedback').addEventListener('click', async function() {
             const feedback = document.querySelector('input[name="feedback"]:checked');
             const actualSentiment = document.getElementById('actual-sentiment').value;
             const review = document.getElementById('text').value;
 
-            if (!feedback) {
-                alert('Please rate the prediction before submitting.');
+            if (!feedback || !actualSentiment || !review) {
+                alert('Please fill in all feedback fields.');
                 return;
             }
-            if (!actualSentiment) {
-                alert('Please select the actual sentiment before submitting.');
-                return;
-            }
-            if (!review) {
-                alert('Please Enter Your Review.');
-                return;
-            }
-            alert(`Feedback Submitted!\nRating: ${feedback.value}\nActual Sentiment: ${actualSentiment}`);
 
-            // Reset the form to only show text input
+            // Send feedback to the backend
+            const response = await fetch('/submit-feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    review: review,
+                    predicted_sentiment: document.getElementById('result').innerText.replace("Prediction: ", ""),
+                    actual_sentiment: actualSentiment,
+                    rating: feedback.value
+                })
+            });
+
+            const result = await response.json();
+            alert(result.message);
+
+            // Reset form fields
             document.getElementById('text').value = "";
             document.getElementById('result').innerText = "";
             document.getElementById('result').style.display = 'none';
             document.getElementById('feedback-section').classList.add('hidden');
-            document.querySelector('input[name="feedback"]:checked').checked = false;
             document.getElementById('actual-sentiment').value = "";
+
+            // Uncheck radio buttons
+            document.querySelectorAll('input[name="feedback"]').forEach(input => input.checked = false);
         });
     </script>
 </body>

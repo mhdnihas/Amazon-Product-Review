@@ -1,0 +1,20 @@
+[
+    {
+        "review": "which was good product",
+        "predicted_sentiment": "Positive",
+        "actual_sentiment": "positive",
+        "rating": "5"
+    },
+    {
+        "review": "This was amazing product",
+        "predicted_sentiment": "Positive",
+        "actual_sentiment": "positive",
+        "rating": "4"
+    },
+    {
+        "review": "good",
+        "predicted_sentiment": "Positive",
+        "actual_sentiment": "positive",
+        "rating": "4"
+    }
+]
