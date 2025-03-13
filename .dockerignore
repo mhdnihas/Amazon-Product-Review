@@ -1,0 +1,10 @@
+#amazonproductreviewsentiment-eb289026e366.json
+#gcs-key.json
+__pycache__/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.git
+

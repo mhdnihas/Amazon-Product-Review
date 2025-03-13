@@ -2,3 +2,8 @@ fastapi
 uvicorn
 tensorflow
 nltk
+evidently
+google-cloud-storage
+pandas
+pydantic
+google-cloud-secret-manager
