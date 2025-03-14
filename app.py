@@ -11,13 +11,17 @@ from tensorflow.keras.models import model_from_json
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
+from nltk.stem import WordNetLemmatizer
 import pandas as pd
 import json
 from google.cloud import storage
 import csv
 import io
 import logging
+from evidently.report import Report
+from evidently.metrics import DataDriftTable, ClassificationQualityMetric
+
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +30,13 @@ logger = logging.getLogger(__name__)
 nltk.download("stopwords")
 nltk.download("punkt")
 nltk.download('punkt_tab')
+nltk.download('wordnet')
+
+stop_words=set(stopwords.words('english'))
+negation_words = {"not", "no", "never", "wasn't", "isn't", "doesn't", "don't", "didn't", "haven't", "hadn't", "couldn't", 
+                  "shouldn't", "won't", "wouldn't", "shan't", "can't", "mustn't","off","some","but","than","too","few","very"}
+
+stop_words.difference_update(negation_words)
 
 BUCKET_NAME = "amazon-product-review"
 FILE_NAME = "Current_User_Reviews.csv"
@@ -57,8 +68,7 @@ model.load_weights("Models/lstm_model.weights.h5")
 with open('Models/tokenizer.pickle', 'rb') as handle:
     tokenizer = pickle.load(handle)
 
-stop_words = set(stopwords.words("english"))
-stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
 
 def preprocess_text(text: str) -> str:
     """Preprocesses input text by applying lowercasing, tokenization, punctuation removal,
@@ -68,7 +78,7 @@ def preprocess_text(text: str) -> str:
     tokens = [word for word in tokens if word not in string.punctuation]
     tokens = [word for word in tokens if word not in stop_words]
     tokens = [word for word in tokens if not word.isdigit()]
-    tokens = [stemmer.stem(word) for word in tokens]
+    tokens = [lemmatizer.lemmatize(word) for word in tokens]
     return " ".join(tokens)
 
 # Store feedback in Google Cloud Storage
@@ -111,10 +121,151 @@ def upload_csv_to_gcs(data):
 
         blob.upload_from_string(output.getvalue(), content_type="text/csv")
         logger.info(f"Feedback appended to {BUCKET_NAME}/{FILE_NAME}")
+        check_model_drift()
         return True
     except Exception as e:
         logger.error(f"Error uploading to GCS: {str(e)}", exc_info=True)
         return False
+
+
+def check_model_drift():
+    try:
+        logger.info('Checking model drift')
+        
+        # Use Google Cloud Storage client directly
+        client = storage.Client()
+        bucket = client.bucket(BUCKET_NAME)
+        
+        # Download reference data
+        ref_blob = bucket.blob("train.csv")
+        if not ref_blob.exists():
+            logger.warning("Reference data file doesn't exist - skipping drift check")
+            return
+            
+        ref_content = ref_blob.download_as_text()
+        reference_data = pd.read_csv(io.StringIO(ref_content))
+        
+        # Download current data
+        current_blob = bucket.blob(FILE_NAME)
+        if not current_blob.exists():
+            logger.warning(f"File {FILE_NAME} doesn't exist - skipping drift check")
+            return
+            
+        current_content = current_blob.download_as_text()
+        current_data = pd.read_csv(io.StringIO(current_content))
+        
+        logger.info(f'Reference data shape: {reference_data.shape}')
+        logger.info(f'Current data shape: {current_data.shape}')
+        
+        # Create a mapping dictionary for sentiment values
+        sentiment_to_num = {
+            'negative': 0,
+            'neutral': 1,
+            'positive': 2,
+            # Handle capitalized versions too
+            'Negative': 0,
+            'Neutral': 1,
+            'Positive': 2
+        }
+        
+        # Map column names if they don't match exactly
+        current_data_mapped = current_data.copy()
+        if 'predicted_sentiment' in current_data.columns and 'prediction' not in current_data.columns:
+            current_data_mapped['prediction'] = current_data['predicted_sentiment'].map(sentiment_to_num)
+            
+        if 'actual_sentiment' in current_data.columns and 'target' not in current_data.columns:
+            current_data_mapped['target'] = current_data['actual_sentiment'].map(sentiment_to_num)
+        
+        common_cols = ['prediction', 'target']
+        
+        if all(col in reference_data.columns for col in common_cols) and \
+           all(col in current_data_mapped.columns for col in common_cols):
+            
+            ref_subset = reference_data[common_cols]
+            current_subset = current_data_mapped[common_cols]
+            
+            # Generate report
+            report = Report(metrics=[ClassificationQualityMetric()])
+            report.run(reference_data=ref_subset, current_data=current_subset)
+            
+            # First save the report to a temporary file
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_file:
+                report.save_html(temp_file.name)
+                temp_file_path = temp_file.name
+
+            os.makedirs('static/reports', exist_ok=True)
+            local_report_path = 'static/reports/drift_report_latest.html'
+            report.save_html(local_report_path)
+            logger.info(f'Drift report saved locally at: {local_report_path}')
+        
+     
+            # Then upload it to GCS
+            report_blob = bucket.blob("reports/drift_report_latest.html")
+            with open(temp_file_path, 'rb') as file_obj:
+                report_blob.upload_from_file(file_obj, content_type='text/html')
+            
+            # Clean up the temporary file
+            os.remove(temp_file_path)
+            
+            # Get a signed URL for the report that will work in browsers
+            report_url = report_blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(hours=24),
+                method="GET"
+            )
+            
+            logger.info(f'Drift report generated and uploaded to GCS. URL: {report_url}')
+            return report_url
+            
+        else:
+            logger.error('Datasets do not have compatible columns for drift analysis')
+            logger.info(f'Reference columns: {reference_data.columns.tolist()}')
+            logger.info(f'Current columns: {current_data_mapped.columns.tolist()}')
+            
+    except Exception as e:
+        logger.error(f"Error in drift checking: {str(e)}", exc_info=True)
+
+
+        
+
+@app.get("/drift-report")
+async def get_drift_report():
+    """Returns the URL to the latest drift report."""
+    try:
+        client = storage.Client()
+        bucket = client.bucket(BUCKET_NAME)
+        blob = bucket.blob("reports/drift_report_latest.html")
+        
+        if not blob.exists():
+            return JSONResponse(content={"error": "No drift report available yet"}, status_code=404)
+        
+        report_url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(hours=24),
+            method="GET"
+        )
+        
+        return JSONResponse(content={"report_url": report_url}, status_code=200)
+    except Exception as e:
+        logger.error(f"Error generating drift report URL: {str(e)}", exc_info=True)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+
+@app.get("/local-drift-report", response_class=FileResponse)
+async def get_local_drift_report():
+    """Serves the locally saved drift report."""
+    report_path = "static/reports/drift_report_latest.html"
+    if os.path.exists(report_path):
+        return FileResponse(report_path)
+    else:
+        return JSONResponse(
+            content={"error": "No local drift report available"}, 
+            status_code=404
+        )
+    
+    
 
 class PredictionInput(BaseModel):
     text: str
