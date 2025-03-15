@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sentiment Analysis</title>
+    <title>Sentiment Analysis Of Amazon Customer Review</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -14,7 +14,7 @@
             padding: 25px;
             border-radius: 12px;
             box-shadow: 0px 5px 15px rgba(0, 0, 0, 0.1);
-            max-width: 450px;
+            max-width: 550px;
             margin: auto;
         }
         h1 {
@@ -43,6 +43,12 @@
         }
         button:hover {
             background: #0056b3;
+        }
+        .view-drift {
+            background: #28a745;
+        }
+        .view-drift:hover {
+            background: #218838;
         }
         #result {
             margin-top: 20px;
@@ -79,11 +85,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>Sentiment Analysis</h1>
+        <h1>Sentiment Analysis of Amazon Customer Reivew</h1>
         <form id="predict-form">
-            <label for="text"><strong>Enter your text:</strong></label>
+            <label for="text"><strong>Enter your Amazon review here...:</strong></label>
             <input type="text" id="text" name="text" required>
             <button type="submit">Analyze</button>
+            <button type="button" class="view-drift" onclick="window.location.href='/view-drift-report'">View Drift Report</button>
         </form>
 
         <div id="result"></div>
@@ -146,7 +153,6 @@
                 return;
             }
 
-            // Send feedback to the backend
             const response = await fetch('/submit-feedback', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -172,5 +178,7 @@
             document.querySelectorAll('input[name="feedback"]').forEach(input => input.checked = false);
         });
     </script>
+
+    
 </body>
 </html>

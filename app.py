@@ -20,7 +20,11 @@ import io
 import logging
 from evidently.report import Report
 from evidently.metrics import DataDriftTable, ClassificationQualityMetric
-
+import datetime
+from fastapi.responses import HTMLResponse
+from evidently.metrics import ClassificationClassBalance,ClassificationConfusionMatrix,ClassificationRocCurve
+import threading
+from Retrain import trigger_retraining, should_retrain
 
 
 # Set up logging
@@ -35,6 +39,17 @@ nltk.download('wordnet')
 stop_words=set(stopwords.words('english'))
 negation_words = {"not", "no", "never", "wasn't", "isn't", "doesn't", "don't", "didn't", "haven't", "hadn't", "couldn't", 
                   "shouldn't", "won't", "wouldn't", "shan't", "can't", "mustn't","off","some","but","than","too","few","very"}
+
+
+stopwords = {
+    'a', 'an', 'the', 'i', 'he', 'she', 'it', 'they', 'we', 'you', 'her', 'him', 'his',
+    'their', 'theirs', 'your', 'yours', 'my', 'mine', 'our', 'ours', 'at', 'by', 'for',
+    'in', 'on', 'to', 'from', 'with', 'between', 'through', 'while', 'during',
+    'under', 'until', 'over', 'both', 'either', 'neither', 'nor', 'or', 'is', 'was',
+    'are', 'were', 'be', 'been', 'being', 'do', 'does', 'did', 'have', 'has', 'had',
+    'shall', 'will', 'can', 'may', 'might', 'must'
+}
+
 
 stop_words.difference_update(negation_words)
 
@@ -75,17 +90,18 @@ def preprocess_text(text: str) -> str:
     stopword removal, numeric filtering, and stemming."""
     text = text.lower()
     tokens = word_tokenize(text)
+    tokens = [word for word in tokens if word not in stopwords]
     tokens = [word for word in tokens if word not in string.punctuation]
-    tokens = [word for word in tokens if word not in stop_words]
     tokens = [word for word in tokens if not word.isdigit()]
     tokens = [lemmatizer.lemmatize(word) for word in tokens]
     return " ".join(tokens)
 
 # Store feedback in Google Cloud Storage
-def store_feedback(review, predicted_sentiment, actual_sentiment=None, rating=None):
+def store_feedback(review, predicted_sentiment, actual_sentiment, rating):
     """Stores user feedback in a CSV file on GCS."""
     feedback_data = [review, predicted_sentiment, actual_sentiment, rating]
     return upload_csv_to_gcs(feedback_data)
+
 
 def upload_csv_to_gcs(data):
     """Appends feedback data to an existing CSV file in GCS, ensuring no duplicates."""
@@ -94,8 +110,8 @@ def upload_csv_to_gcs(data):
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
         blob = bucket.blob(FILE_NAME)
-
-        header = ["review", "predicted_sentiment", "actual_sentiment", "rating"]
+        print("\nfeedback data:\n",data)
+        header = ["review", "prediction", "target", "rating"]  # Match your actual column names
 
         existing_data = []
         if blob.exists():
@@ -110,10 +126,13 @@ def upload_csv_to_gcs(data):
             existing_data = [header]
             logger.info(f"Creating new file {FILE_NAME} in bucket {BUCKET_NAME}")
 
-        # Prevent duplicates
-        if data not in existing_data:
+        # Prevent duplicates - Make sure we're comparing consistent data structures
+        data_tuple = tuple(data)
+        existing_tuples = [tuple(row) for row in existing_data[1:]]  # Skip header
+        print('\n****existing_tuples:',existing_tuples)
+        if data_tuple not in existing_tuples:
             existing_data.append(data)
-
+        print('\n****data_tuple:',data_tuple)
         # Write data back to GCS
         output = io.StringIO()
         writer = csv.writer(output)
@@ -126,6 +145,32 @@ def upload_csv_to_gcs(data):
     except Exception as e:
         logger.error(f"Error uploading to GCS: {str(e)}", exc_info=True)
         return False
+
+
+def accuracy_diff(report):
+    try:
+        # Extract metrics from the report object
+        metrics_json = report.json()
+        metrics_dict = json.loads(metrics_json)
+        
+        # Navigate the metrics structure to find accuracy difference
+        accuracy_diff_value = 0
+        if "metrics" in metrics_dict:
+            for metric in metrics_dict["metrics"]:
+                if metric["metric"] == "ClassificationQualityMetric":  # Note: full name is "ClassificationQualityMetric"
+                    if "current" in metric["result"] and "reference" in metric["result"]:
+                        current_accuracy = metric["result"]["current"]["accuracy"]
+                        reference_accuracy = metric["result"]["reference"]["accuracy"]
+                        accuracy_diff_value = reference_accuracy - current_accuracy
+                        logger.info(f"Found accuracy difference: {accuracy_diff_value}")
+                    break
+            
+        logger.info(f"Extracted accuracy difference: {accuracy_diff_value}")
+        return accuracy_diff_value
+    except Exception as e:
+        logger.error(f"Error extracting metrics: {e}", exc_info=True)
+        return 0
+
 
 
 def check_model_drift():
@@ -154,6 +199,8 @@ def check_model_drift():
         current_content = current_blob.download_as_text()
         current_data = pd.read_csv(io.StringIO(current_content))
         
+        print("\ncurrent data:\n",current_data)
+
         logger.info(f'Reference data shape: {reference_data.shape}')
         logger.info(f'Current data shape: {current_data.shape}')
         
@@ -168,60 +215,53 @@ def check_model_drift():
             'Positive': 2
         }
         
-        # Map column names if they don't match exactly
-        current_data_mapped = current_data.copy()
-        if 'predicted_sentiment' in current_data.columns and 'prediction' not in current_data.columns:
-            current_data_mapped['prediction'] = current_data['predicted_sentiment'].map(sentiment_to_num)
-            
-        if 'actual_sentiment' in current_data.columns and 'target' not in current_data.columns:
-            current_data_mapped['target'] = current_data['actual_sentiment'].map(sentiment_to_num)
+        current_data['prediction'] = current_data['prediction'].map(sentiment_to_num)
+        current_data['target'] = current_data['target'].map(sentiment_to_num)
         
         common_cols = ['prediction', 'target']
         
-        if all(col in reference_data.columns for col in common_cols) and \
-           all(col in current_data_mapped.columns for col in common_cols):
             
-            ref_subset = reference_data[common_cols]
-            current_subset = current_data_mapped[common_cols]
+        ref_subset = reference_data[common_cols]
+        current_subset = current_data[common_cols]
             
+        print("\ncurrent_subset:\n",current_subset)
             # Generate report
-            report = Report(metrics=[ClassificationQualityMetric()])
-            report.run(reference_data=ref_subset, current_data=current_subset)
-            
-            # First save the report to a temporary file
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_file:
-                report.save_html(temp_file.name)
-                temp_file_path = temp_file.name
+        report = Report(metrics=[ClassificationQualityMetric(),ClassificationClassBalance(),ClassificationConfusionMatrix(),DataDriftTable(num_stattest='kl_div', cat_stattest='psi')])
+        report.run(reference_data=ref_subset, current_data=current_subset)
 
-            os.makedirs('static/reports', exist_ok=True)
-            local_report_path = 'static/reports/drift_report_latest.html'
-            report.save_html(local_report_path)
-            logger.info(f'Drift report saved locally at: {local_report_path}')
+        accuracy_drift = accuracy_diff(report)
+
+        print('\n************accuracy_diff********:',accuracy_drift)
+
+        if should_retrain(accuracy_diff, feedback_count):
+        #     # Run retraining in a background thread to avoid blocking
+            threading.Thread(target=trigger_retraining).start()
+
+
+            # First save the report to a temporary file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_file:
+            report.save_html(temp_file.name)
+            temp_file_path = temp_file.name
         
      
             # Then upload it to GCS
-            report_blob = bucket.blob("reports/drift_report_latest.html")
-            with open(temp_file_path, 'rb') as file_obj:
-                report_blob.upload_from_file(file_obj, content_type='text/html')
+        report_blob = bucket.blob("reports/drift_report_latest.html")
+        with open(temp_file_path, 'rb') as file_obj:
+            report_blob.upload_from_file(file_obj, content_type='text/html')
             
             # Clean up the temporary file
-            os.remove(temp_file_path)
-            
+        os.remove(temp_file_path)
+
             # Get a signed URL for the report that will work in browsers
-            report_url = report_blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(hours=24),
-                method="GET"
+        report_url = report_blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(hours=24),
+            method="GET"
             )
             
-            logger.info(f'Drift report generated and uploaded to GCS. URL: {report_url}')
-            return report_url
-            
-        else:
-            logger.error('Datasets do not have compatible columns for drift analysis')
-            logger.info(f'Reference columns: {reference_data.columns.tolist()}')
-            logger.info(f'Current columns: {current_data_mapped.columns.tolist()}')
+        logger.info(f'Drift report generated and uploaded to GCS. URL: {report_url}')
+        return report_url
             
     except Exception as e:
         logger.error(f"Error in drift checking: {str(e)}", exc_info=True)
@@ -229,43 +269,28 @@ def check_model_drift():
 
         
 
-@app.get("/drift-report")
-async def get_drift_report():
-    """Returns the URL to the latest drift report."""
+
+@app.get("/view-drift-report", response_class=HTMLResponse)
+async def view_drift_report():
+    """Serves the drift report HTML directly."""
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
         blob = bucket.blob("reports/drift_report_latest.html")
         
         if not blob.exists():
-            return JSONResponse(content={"error": "No drift report available yet"}, status_code=404)
+            return HTMLResponse(content="<html><body><h1>No drift report available yet</h1></body></html>")
         
-        report_url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(hours=24),
-            method="GET"
-        )
+        # Download the report content
+        report_content = blob.download_as_text()
         
-        return JSONResponse(content={"report_url": report_url}, status_code=200)
+        # Serve the HTML directly
+        return HTMLResponse(content=report_content)
     except Exception as e:
-        logger.error(f"Error generating drift report URL: {str(e)}", exc_info=True)
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        logger.error(f"Error serving drift report: {str(e)}", exc_info=True)
+        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>")
 
 
-
-@app.get("/local-drift-report", response_class=FileResponse)
-async def get_local_drift_report():
-    """Serves the locally saved drift report."""
-    report_path = "static/reports/drift_report_latest.html"
-    if os.path.exists(report_path):
-        return FileResponse(report_path)
-    else:
-        return JSONResponse(
-            content={"error": "No local drift report available"}, 
-            status_code=404
-        )
-    
-    
 
 class PredictionInput(BaseModel):
     text: str
