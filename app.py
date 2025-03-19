@@ -8,8 +8,11 @@ import logging
 import pandas as pd
 import io
 import csv
+import json
 import datetime
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
 from tensorflow.keras.models import model_from_json
@@ -24,24 +27,22 @@ from evidently.metrics import (
 )
 
 
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 
-# Read the JSON key from environment variable
-gcs_key_content = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-
-# Write it to a file
-key_path = "/app/gcs-key.json"
-with open(key_path, "w") as key_file:
-    key_file.write(gcs_key_content)
-
-# Set Google Application Credentials
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+BUCKET_NAME = "sentiment-reports-bucket"
+FILE_NAME = "Current_User_Reviews.csv"
+MODEL_DIR = "Models"
 
 
+gcp_credentials = json.loads(os.getenv("GCP_SERVICE_ACCOUNT_KEY"))
+client = storage.Client.from_service_account_info(gcp_credentials)
+bucket_name = "sentiment-reports-bucket"
+bucket = client.bucket(bucket_name)
 
 # Download necessary NLTK resources
 nltk.download("punkt")
@@ -51,10 +52,6 @@ nltk.download('maxent_ne_chunker')
 nltk.download('punkt_tab')
 
 
-# Constants
-BUCKET_NAME = "sentiment-reports-bucket"
-FILE_NAME = "Current_User_Reviews.csv"
-MODEL_DIR = "Models"
 
 # Stopwords set for text preprocessing
 lemmatizer = WordNetLemmatizer()
@@ -75,16 +72,36 @@ def load_model():
     model.load_weights(f"{MODEL_DIR}/lstm_model.weights.h5")
     return model
 
-model = load_model()
 
 # Load Tokenizer
 def load_tokenizer():
     with open(f"{MODEL_DIR}/tokenizer.pickle", "rb") as handle:
         return pickle.load(handle)
 
-tokenizer = load_tokenizer()
 
 app = FastAPI()
+
+# Global variables
+model = None
+tokenizer = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    global model, tokenizer
+    try:
+        model = load_model()
+        tokenizer = load_tokenizer()
+        logger.info("Model and tokenizer loaded successfully")
+        
+        # Test GCS connection
+        try:
+            bucket = client.bucket(BUCKET_NAME)
+            logger.info(f"Successfully connected to GCS bucket: {BUCKET_NAME}")
+        except Exception as e:
+            logger.warning(f"GCS connection issue: {e}. Some features may not work.")
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
 
 
 # Preprocessing function
@@ -216,10 +233,15 @@ async def view_drift_report():
             return HTMLResponse(content="<html><body><h1>No drift report available yet</h1></body></html>")
         
         # Download the report content
-        report_content = blob.download_as_text()
-        
+    # Generate a signed URL that expires in 1 hour
+        url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(hours=1),
+                method="GET"
+                )        
         # Serve the HTML directly
-        return HTMLResponse(content=report_content)
+        return RedirectResponse(url)
+
     except Exception as e:
         logger.error(f"Error serving drift report: {str(e)}", exc_info=True)
         return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>")
@@ -245,8 +267,14 @@ async def get_homepage():
 
 
 
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "model_loaded": model is not None}
+
+
+
 @app.post("/submit-feedback")
-async def submit_feedback(feedback: FeedbackInput):
+async def submit_feedback(feedback: FeedbackInput,background_tasks: BackgroundTasks):
     """Handles storing user feedback in a JSON file."""
     try:
         logger.info(f"Received feedback: {feedback}")
@@ -257,6 +285,9 @@ async def submit_feedback(feedback: FeedbackInput):
             feedback.rating
         )
         print("\nresult1:\n",feedback.review,feedback.predicted_sentiment,feedback.actual_sentiment,feedback.rating)
+
+        background_tasks.add_task(check_model_drift)
+
         logger.info(f"Feedback storage result: {result}")
         return JSONResponse(content={"message": "Feedback saved successfully!"}, status_code=200)
     except Exception as e:
@@ -285,5 +316,7 @@ async def predict(request: PredictionInput):
     return PredictionResponse(predictions=sentiment)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
