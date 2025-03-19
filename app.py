@@ -29,6 +29,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+
+# Read the JSON key from environment variable
+gcs_key_content = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+# Write it to a file
+key_path = "/app/gcs-key.json"
+with open(key_path, "w") as key_file:
+    key_file.write(gcs_key_content)
+
+# Set Google Application Credentials
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+
+
+
 # Download necessary NLTK resources
 nltk.download("punkt")
 nltk.download("wordnet")
@@ -271,5 +285,5 @@ async def predict(request: PredictionInput):
     return PredictionResponse(predictions=sentiment)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)

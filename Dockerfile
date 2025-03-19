@@ -10,13 +10,13 @@ FROM python:3.9-slim
 
 WORKDIR /app
 COPY --from=builder /install /usr/local
-COPY . .
+COPY . . 
+COPY Models/ /app/Models/
 
-
-
+# Expose the port (Render uses port 10000 by default)
 ENV PORT=8080
-ENV GOOGLE_APPLICATION_CREDENTIALS="/app/gcs-key.json"
+ENV PYTHONUNBUFFERED=1
+
 EXPOSE 8080
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
-    
+CMD ["sh", "-c", "gunicorn app:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT"]

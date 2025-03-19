@@ -1,3 +1,9 @@
 myvenv/
 amazonproductreviewsentiment-eb289026e366.json/amazonproductreviewsentiment-eb289026e366.json
 *.json
+__pycache__/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
