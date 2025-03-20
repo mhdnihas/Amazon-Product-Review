@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 
 
 
+# Set NLTK data path
+nltk.data.path.append("./nltk_data")
+
+# Ensure required NLTK resources are available
+for resource in ["punkt", "wordnet", "averaged_perceptron_tagger", "maxent_ne_chunker", "punkt_tab"]:
+    try:
+        nltk.data.find(f"tokenizers/{resource}")
+    except LookupError:
+        nltk.download(resource, download_dir="./nltk_data")
+
+        
+
+
 BUCKET_NAME = "sentiment-reports-bucket"
 FILE_NAME = "Current_User_Reviews.csv"
 MODEL_DIR = "Models"
@@ -41,8 +54,7 @@ MODEL_DIR = "Models"
 
 gcp_credentials = json.loads(os.getenv("GCP_SERVICE_ACCOUNT_KEY"))
 client = storage.Client.from_service_account_info(gcp_credentials)
-bucket_name = "sentiment-reports-bucket"
-bucket = client.bucket(bucket_name)
+bucket = client.bucket(BUCKET_NAME)
 
 # Download necessary NLTK resources
 nltk.download("punkt")
@@ -127,8 +139,6 @@ def store_feedback(review, predicted_sentiment, actual_sentiment, rating):
 # Upload feedback to GCS
 def upload_csv_to_gcs(data):
     try:
-        client = storage.Client()
-        bucket = client.bucket(BUCKET_NAME)
         blob = bucket.blob(FILE_NAME)
         header = ["review", "prediction", "target", "rating"]
 
@@ -160,9 +170,6 @@ def upload_csv_to_gcs(data):
 # Check Model Drift
 def check_model_drift():
     try:
-        client = storage.Client()
-        bucket = client.bucket(BUCKET_NAME)
-
         ref_blob = bucket.blob("train.csv")
         current_blob = bucket.blob(FILE_NAME)
 
@@ -205,7 +212,7 @@ def check_model_drift():
             temp_file_path = temp_file.name
         
      
-        report_blob = bucket.blob("reports/drift_report_latest.html")
+        report_blob = bucket.blob("reports/reports_drift_report_latest.html")
         with open(temp_file_path, 'rb') as file_obj:
             report_blob.upload_from_file(file_obj, content_type='text/html')
             
@@ -225,9 +232,7 @@ def check_model_drift():
 async def view_drift_report():
     """Serves the drift report HTML directly."""
     try:
-        client = storage.Client()
-        bucket = client.bucket(BUCKET_NAME)
-        blob = bucket.blob("reports/drift_report_latest.html")
+        blob = bucket.blob("reports/reports_drift_report_latest.html")
         
         if not blob.exists():
             return HTMLResponse(content="<html><body><h1>No drift report available yet</h1></body></html>")

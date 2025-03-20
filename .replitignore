@@ -1,0 +1,30 @@
+# Virtual environments
+.venv/
+myvenv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# NLTK data
+.nltk_data/
+
+# Jupyter Notebooks 
+*.ipynb
+Monitoring.ipynb
+amazon-product-review.ipynb
+
+# Database and credentials
+mlflow.db
+mlruns/
+artifacts/
+local-axis-454004-d5-fb44e334dd75.json  # Sensitive file, ensure it's ignored
+
+# Cloud deployment files 
+app.yaml
+.env  # If you have a .env file for environment variables
+
+# Other logs and temp files
+*.log
+.DS_Store
