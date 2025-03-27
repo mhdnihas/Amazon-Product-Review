@@ -8,3 +8,4 @@ pandas
 pydantic
 google-cloud-secret-manager
 gcsfs
+gunicorn

@@ -7,3 +7,4 @@ venv/
 *.pyo
 *.pyd
 .DS_Store
+mlflow.db

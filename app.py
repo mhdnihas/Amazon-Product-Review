@@ -56,14 +56,6 @@ gcp_credentials = json.loads(os.getenv("GCP_SERVICE_ACCOUNT_KEY"))
 client = storage.Client.from_service_account_info(gcp_credentials)
 bucket = client.bucket(BUCKET_NAME)
 
-# Download necessary NLTK resources
-nltk.download("punkt")
-nltk.download("wordnet")
-nltk.download('averaged_perceptron_tagger')
-nltk.download('maxent_ne_chunker')
-nltk.download('punkt_tab')
-
-
 
 # Stopwords set for text preprocessing
 lemmatizer = WordNetLemmatizer()
